@@ -93,6 +93,11 @@ button.act.primary:hover{background:var(--signal);color:#0d0f11;border-color:var
 .q.done .q-bar i{background:var(--steel-faint)}
 .q.err .q-pct{color:var(--danger)}
 .q.err .q-bar i{background:var(--danger);width:100%}
+.q-retry{grid-column:1/-1;justify-self:start;margin-top:8px;
+  font-family:var(--mono);font-size:.74rem;letter-spacing:.04em;
+  text-transform:uppercase;background:none;color:var(--signal);cursor:pointer;
+  border:1px solid var(--signal-dim);padding:5px 12px}
+.q-retry:hover{background:var(--signal);color:#0d0f11;border-color:var(--signal)}
 
 /* --- listing --- */
 .tablewrap{border:1px solid var(--rule);background:var(--panel-lo);overflow-x:auto}
@@ -322,13 +327,27 @@ function drawCrumbs() {
 
 async function go(dir) { cwd = dir || '/'; await refresh(); }
 
+// A proxy returning 502 while the app restarts sends an empty body, and
+// response.json() then fails with "Unexpected end of JSON input" — which tells
+// the reader nothing about what happened or what to do.
+async function asJson(r) {
+  const text = await r.text();
+  if (!text) {
+    throw new Error(r.status >= 500
+      ? `The server did not respond (HTTP ${r.status}). It may be restarting — try again in a moment.`
+      : `Empty response (HTTP ${r.status})`);
+  }
+  try { return JSON.parse(text); }
+  catch { throw new Error(`Unexpected response (HTTP ${r.status})`); }
+}
+
 async function refresh() {
   drawCrumbs();
   rows.innerHTML = '';
   let data;
   try {
     const r = await fetch(api('api/list?dir=' + encodeURIComponent(cwd)));
-    data = await r.json();
+    data = await asJson(r);
     if (!r.ok) throw new Error(data.error || r.statusText);
   } catch (e) { say('Could not list this folder: ' + e.message, true); return; }
 
@@ -372,7 +391,7 @@ async function post(route, body) {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const j = await r.json().catch(() => ({}));
+  const j = await asJson(r);
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
@@ -425,13 +444,18 @@ $('btn-mkdir').onclick = async () => {
 // XHR rather than fetch: fetch still cannot report upload progress, and a
 // multi-gigabyte installer with no progress bar looks indistinguishable from
 // a hang.
-function upload(file) {
-  const card = document.createElement('div');
+function upload(file, card) {
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'q';
+    card.innerHTML = '<div class="q-name"></div><div class="q-pct">0%</div><div class="q-bar"><i></i></div>';
+    card.querySelector('.q-name').textContent = file.name;
+    queue.append(card);
+  }
   card.className = 'q';
-  card.innerHTML = '<div class="q-name"></div><div class="q-pct">0%</div><div class="q-bar"><i></i></div>';
-  card.querySelector('.q-name').textContent = file.name;
-  queue.append(card);
   const pct = card.querySelector('.q-pct'), bar = card.querySelector('.q-bar i');
+  bar.style.width = '0%';
+  card.querySelector('.q-retry')?.remove();
 
   return new Promise((resolve) => {
     const dest = (cwd === '/' ? '' : cwd) + '/' + file.name;
@@ -448,14 +472,14 @@ function upload(file) {
         pct.textContent = fmtSize(file.size); bar.style.width = '100%';
         setTimeout(() => card.remove(), 2500);
       } else {
-        card.classList.add('err');
         let m = 'failed';
         try { m = JSON.parse(xhr.responseText).error || m; } catch {}
-        pct.textContent = m;
+        if (xhr.status >= 500) m = 'server restarting';
+        fail(card, pct, m, file);
       }
       resolve();
     };
-    xhr.onerror = () => { card.classList.add('err'); pct.textContent = 'network error'; resolve(); };
+    xhr.onerror = () => { fail(card, pct, 'network error', file); resolve(); };
     xhr.send(file);
   });
 }
@@ -464,6 +488,19 @@ function upload(file) {
 // socket per file and makes every progress bar crawl in lockstep, which reads
 // as a stall. Three keeps the link busy and each bar legible.
 const PARALLEL = 3;
+
+// Nothing partial is left on the server when an upload fails — it writes to
+// <name>.part and only renames on success — so retrying is always safe and
+// always starts clean.
+function fail(card, pct, message, file) {
+  card.classList.add('err');
+  pct.textContent = message;
+  const again = document.createElement('button');
+  again.className = 'q-retry';
+  again.textContent = 'Retry';
+  again.onclick = () => upload(file, card).then(refresh);
+  card.querySelector('.q-bar').after(again);
+}
 
 async function uploadAll(files) {
   const queue = [...files];
