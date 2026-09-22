@@ -201,6 +201,31 @@ const server = http.createServer(async (req, res) => {
 });
 
 fs.mkdirSync(ROOT, { recursive: true });
+
+// A .part file can only be an upload that did not finish, and nothing is in
+// flight at startup, so anything here is debris from a previous run.
+try {
+  for (const f of fs.readdirSync(ROOT, { recursive: true })) {
+    if (typeof f === 'string' && f.endsWith('.part')) {
+      fs.rmSync(path.join(ROOT, f), { force: true });
+      console.log(`removed stale partial upload: ${f}`);
+    }
+  }
+} catch {}
+
 server.listen(PORT, HOST, () => {
   console.log(`${TITLE} — serving ${ROOT} on http://${HOST}:${PORT}`);
 });
+
+// Finish what is in flight before exiting. Without this, a restart during a
+// large upload drops the connection and leaves a .part behind — and an
+// updater that restarts services is exactly the thing most likely to do it.
+let closing = false;
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    if (closing) return process.exit(1);   // second signal: go now
+    closing = true;
+    console.log(`${sig} — finishing in-flight requests`);
+    server.close(() => { console.log('drained, exiting'); process.exit(0); });
+  });
+}

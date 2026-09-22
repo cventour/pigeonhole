@@ -460,10 +460,15 @@ function upload(file) {
   });
 }
 
+// Three at a time. Serial wastes the link on small files; unbounded opens a
+// socket per file and makes every progress bar crawl in lockstep, which reads
+// as a stall. Three keeps the link busy and each bar legible.
+const PARALLEL = 3;
+
 async function uploadAll(files) {
-  // One at a time: parallel uploads of large installers just divide the same
-  // link and make every progress bar wrong.
-  for (const f of files) await upload(f);
+  const queue = [...files];
+  const worker = async () => { while (queue.length) await upload(queue.shift()); };
+  await Promise.all(Array.from({ length: Math.min(PARALLEL, queue.length) }, worker));
   refresh();
 }
 
