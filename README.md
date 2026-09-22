@@ -1,14 +1,18 @@
 # Pigeonhole
 
-A small self-hosted file manager. Drop files in, take files out.
+A file pigeonhole you can stand up in a minute. Put files in, let people take
+them out, and take back whatever they leave you.
 
-Upload by drag-and-drop or by browsing, with a progress bar per file. Browse
-folders, rename, delete, download, create folders. That is the whole feature
-list, and it is meant to stay that way.
+Useful when a group needs a shared drop: distributing builds, installers or
+documents to a handful of machines, and collecting files back from them
+without email, chat attachments or a cloud account.
 
-**No dependencies.** Node's standard library and nothing else — no install
-step, no lockfile, no supply chain, nothing to update when a transitive
-package goes bad.
+Drag files in or browse for them, with a progress bar on each. Browse folders,
+rename, delete, download, make folders. That is the whole feature list and it
+is meant to stay short.
+
+**No dependencies.** Node's standard library and nothing else. No install
+step, no lockfile, nothing to update when someone else's package goes wrong.
 
 ```bash
 git clone https://github.com/cventour/pigeonhole.git
@@ -16,7 +20,7 @@ cd pigeonhole
 REPO_ROOT=/srv/files node server.js
 ```
 
-Then open http://localhost:3001.
+Open http://localhost:3001.
 
 ## Configuration
 
@@ -34,13 +38,13 @@ Branding is configuration rather than code, so one copy serves any deployment.
 
 ## There is no authentication
 
-Read that again before you expose it. Pigeonhole assumes it is on a network
+Read that again before you expose it. Pigeonhole assumes it sits on a network
 you trust, or behind something that does the authenticating. Anyone who can
 reach it can upload, rename and delete.
 
-That is a deliberate scope decision, not an oversight. Authentication done
-badly is worse than none, and every reverse proxy already does it well: put
-it behind basic auth, an OIDC proxy, a VPN, or a LAN you control.
+That is a scope decision, not an oversight. Authentication done badly is worse
+than none, and every reverse proxy already does it well: put it behind basic
+auth, an OIDC proxy, a VPN, or a network you control.
 
 It binds `127.0.0.1` by default so that exposing it takes a decision.
 
@@ -71,12 +75,12 @@ location /files/  { proxy_pass http://127.0.0.1:3001/; }
 Three choices worth explaining, because each looks wrong at first glance.
 
 **Uploads are a raw `PUT` body, not `multipart/form-data`.** Multipart is the
-conventional answer and would require a parser — the one dependency this
-would otherwise need. A raw body streams straight to disk, so a four-gigabyte
-file never lands in memory, and there is no parser to audit or update.
+conventional answer and would need a parser — the one dependency this would
+otherwise have. A raw body streams straight to disk, so a four-gigabyte file
+never lands in memory, and there is nothing to audit or update.
 
 **The browser uses `XMLHttpRequest`, not `fetch`.** `fetch` still cannot
-report upload progress. An upload of any size with no progress bar is
+report upload progress. A large upload with no progress bar is
 indistinguishable from a hang, so XHR stays until browsers fix that.
 
 **Files upload to `<name>.part` and are renamed on completion.** An
@@ -105,6 +109,8 @@ User=pigeonhole
 WorkingDirectory=/opt/pigeonhole
 ExecStart=/usr/bin/node /opt/pigeonhole/server.js
 Environment=REPO_ROOT=/srv/files
+# Quote any value containing a space: systemd splits unquoted ones.
+Environment="REPO_TITLE=Team Drop"
 Restart=on-failure
 
 NoNewPrivileges=true
