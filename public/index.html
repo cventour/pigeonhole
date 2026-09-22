@@ -155,6 +155,10 @@ dialog::backdrop{background:rgba(6,8,10,.72)}
   font-family:var(--mono);font-size:.9rem;color:var(--ink);
   background:var(--panel);border:1px solid var(--rule-hi)}
 .dlg-body input:focus{outline:none;border-color:var(--signal)}
+.dlg-all{display:flex;align-items:center;gap:9px;margin-top:16px;
+  font-family:var(--mono);font-size:.8rem;color:var(--steel-dim);cursor:pointer}
+.dlg-all input{width:auto;margin:0;accent-color:var(--signal)}
+.dlg-foot{flex-wrap:wrap}
 .dlg-err{margin-top:10px;color:var(--danger);font-family:var(--mono);
   font-size:.8rem;min-height:1.2em}
 .dlg-foot{display:flex;justify-content:flex-end;gap:10px;
@@ -223,12 +227,12 @@ footer a{color:var(--steel-dim)}
       <p id="dlg-text"></p>
       <p class="warn" id="dlg-warn" hidden></p>
       <input id="dlg-input" hidden autocomplete="off" spellcheck="false">
+      <label class="dlg-all" id="dlg-all" hidden>
+        <input type="checkbox" id="dlg-all-box"> <span id="dlg-all-label"></span>
+      </label>
       <div class="dlg-err" id="dlg-err"></div>
     </div>
-    <div class="dlg-foot">
-      <button value="cancel" id="dlg-cancel">Cancel</button>
-      <button value="ok" id="dlg-ok"></button>
-    </div>
+    <div class="dlg-foot" id="dlg-foot"></div>
   </form>
 </dialog>
 
@@ -255,9 +259,11 @@ const fmtSize = (n) => {
 const fmtDate = (ms) => new Date(ms).toLocaleString(undefined,
   { year:'numeric', month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit' });
 
-// One dialog, reused. Returns the typed value, true, or null for cancelled.
+// One dialog, reused. Resolves to the chosen button's value (null when
+// cancelled), or the typed string when the dialog has an input.
 const dlg = $('dlg');
-function ask({ title, text, warn, input, okLabel, danger, validate }) {
+function ask({ title, text, warn, input, okLabel, danger, validate,
+               buttons, applyAll }) {
   $('dlg-title').textContent = title;
   $('dlg-text').innerHTML = '';
   $('dlg-text').append(...text);
@@ -266,26 +272,47 @@ function ask({ title, text, warn, input, okLabel, danger, validate }) {
   const i = $('dlg-input');
   i.hidden = !input;
   i.value = input?.value ?? '';
-  const ok = $('dlg-ok');
-  ok.textContent = okLabel;
-  ok.className = danger ? 'danger' : 'go';
+  const all = $('dlg-all');
+  all.hidden = !applyAll;
+  $('dlg-all-box').checked = false;
+  if (applyAll) $('dlg-all-label').textContent = applyAll;
+
   const err = $('dlg-err'); err.textContent = '';
 
+  const spec = buttons || [
+    { value: 'cancel', label: 'Cancel' },
+    { value: 'ok', label: okLabel, cls: danger ? 'danger' : 'go' },
+  ];
+  const foot = $('dlg-foot');
+  foot.innerHTML = '';
+  let submitBtn = null;
+  for (const b of spec) {
+    const el = document.createElement('button');
+    el.value = b.value; el.textContent = b.label;
+    if (b.cls) el.className = b.cls;
+    foot.append(el);
+    if (b.value !== 'cancel' && !submitBtn) submitBtn = el;
+  }
+
   return new Promise((resolve) => {
-    const submit = (e) => {
+    const guard = (e) => {
       if (!input) return;                       // confirm-only: let it close
       const v = i.value.trim();
       const problem = validate ? validate(v) : (v ? null : 'Enter a name');
       if (problem) { e.preventDefault(); err.textContent = problem; i.focus(); }
     };
-    ok.addEventListener('click', submit);
+    submitBtn?.addEventListener('click', guard);
     dlg.addEventListener('close', () => {
-      ok.removeEventListener('click', submit);
-      resolve(dlg.returnValue === 'ok' ? (input ? i.value.trim() : true) : null);
+      submitBtn?.removeEventListener('click', guard);
+      const v = dlg.returnValue;
+      const chose = v && v !== 'cancel';
+      resolve(chose
+        ? (input ? i.value.trim() : { action: v, all: $('dlg-all-box').checked })
+        : null);
     }, { once: true });
 
     dlg.showModal();
-    if (input) { i.focus(); i.select(); } else { $('dlg-cancel').focus(); }
+    if (input) { i.focus(); i.select(); } else { foot.querySelector('button')?.focus(); }
   });
 }
 
@@ -444,7 +471,7 @@ $('btn-mkdir').onclick = async () => {
 // XHR rather than fetch: fetch still cannot report upload progress, and a
 // multi-gigabyte installer with no progress bar looks indistinguishable from
 // a hang.
-function upload(file, card) {
+function upload(file, card, mode) {
   if (!card) {
     card = document.createElement('div');
     card.className = 'q';
@@ -453,14 +480,16 @@ function upload(file, card) {
     queue.append(card);
   }
   card.className = 'q';
+  if (mode) card.dataset.mode = mode;
   const pct = card.querySelector('.q-pct'), bar = card.querySelector('.q-bar i');
   bar.style.width = '0%';
   card.querySelector('.q-retry')?.remove();
 
   return new Promise((resolve) => {
     const dest = (cwd === '/' ? '' : cwd) + '/' + file.name;
+    const q = mode ? '?mode=' + mode : '';
     const xhr = new XMLHttpRequest();
-    xhr.open('PUT', api('api/upload' + dest.split('/').map(encodeURIComponent).join('/')));
+    xhr.open('PUT', api('api/upload' + dest.split('/').map(encodeURIComponent).join('/') + q));
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
       const p = Math.round(e.loaded / e.total * 100);
@@ -474,6 +503,7 @@ function upload(file, card) {
       } else {
         let m = 'failed';
         try { m = JSON.parse(xhr.responseText).error || m; } catch {}
+        if (xhr.status === 409) m = 'already exists';
         if (xhr.status >= 500) m = 'server restarting';
         fail(card, pct, m, file);
       }
@@ -498,13 +528,63 @@ function fail(card, pct, message, file) {
   const again = document.createElement('button');
   again.className = 'q-retry';
   again.textContent = 'Retry';
-  again.onclick = () => upload(file, card).then(refresh);
+  again.onclick = () => upload(file, card, card.dataset.mode || undefined).then(refresh);
   card.querySelector('.q-bar').after(again);
 }
 
+async function exists(name) {
+  const p = (cwd === '/' ? '' : cwd) + '/' + name;
+  try {
+    const r = await fetch(api('api/exists?path=' + encodeURIComponent(p)));
+    return (await asJson(r)).exists;
+  } catch { return false; }   // let the upload itself report the real problem
+}
+
+// Asked once per conflict, or once for all of them. Checking before sending
+// means a 900 MB file is never uploaded only to be refused at the end.
+async function resolveConflict(name, remaining) {
+  const answer = await ask({
+    title: 'File already exists',
+    text: [strong(name), txt(' is already in this folder.')],
+    warn: 'Replacing overwrites the copy that is there now.',
+    applyAll: remaining > 1 ? `Do this for the other ${remaining - 1} too` : null,
+    buttons: [
+      { value: 'cancel', label: 'Skip' },
+      { value: 'keep', label: 'Keep both', cls: 'go' },
+      { value: 'replace', label: 'Replace', cls: 'danger' },
+    ],
+  });
+  return answer;   // null = skip
+}
+
 async function uploadAll(files) {
-  const queue = [...files];
-  const worker = async () => { while (queue.length) await upload(queue.shift()); };
+  const list = [...files];
+
+  // Resolve conflicts first, so the uploads that follow run unattended.
+  const plan = [];
+  let blanket = null;
+  for (let n = 0; n < list.length; n++) {
+    const f = list[n];
+    if (!(await exists(f.name))) { plan.push({ file: f }); continue; }
+    if (blanket) {
+      if (blanket !== 'skip') plan.push({ file: f, mode: blanket });
+      continue;
+    }
+    const ans = await resolveConflict(f.name, list.length - n);
+    const action = ans?.action ?? 'skip';
+    if (ans?.all) blanket = action;
+    if (action !== 'skip') plan.push({ file: f, mode: action });
+    else say(`Skipped ${f.name}`);
+  }
+  if (!plan.length) { refresh(); return; }
+
+  const queue = [...plan];
+  const worker = async () => {
+    while (queue.length) {
+      const job = queue.shift();
+      await upload(job.file, null, job.mode);
+    }
+  };
   await Promise.all(Array.from({ length: Math.min(PARALLEL, queue.length) }, worker));
   refresh();
 }

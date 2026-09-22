@@ -90,13 +90,41 @@ async function list(dir) {
   return out;
 }
 
-async function upload(req, res, rel) {
-  const full = safe(rel);
+// "file.tar.gz" -> ["file", ".tar.gz"], so a suffixed copy keeps the whole
+// extension rather than becoming "file.tar (2).gz".
+function splitName(name) {
+  const m = name.match(/^(.+?)((?:\.tar)?\.[^.]+)$/);
+  return m ? [m[1], m[2]] : [name, ''];
+}
+
+function freeName(dir, name) {
+  const [base, ext] = splitName(name);
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${base} (${n})${ext}`;
+    if (!fs.existsSync(path.join(dir, candidate))) return candidate;
+  }
+  return `${base} (${Date.now()})${ext}`;
+}
+
+async function upload(req, res, rel, mode) {
+  let full = safe(rel);
   if (!full || full === ROOT) return json(res, 400, { error: 'bad path' });
-  const name = path.basename(full);
+  let name = path.basename(full);
   if (!safeName(name)) return json(res, 400, { error: 'bad filename' });
 
   await fsp.mkdir(path.dirname(full), { recursive: true });
+
+  // Refuse rather than silently overwrite. The client asks and retries with
+  // an explicit mode; a file manager that replaces without asking is the one
+  // that loses somebody's work.
+  if (fs.existsSync(full) && mode !== 'replace' && mode !== 'keep') {
+    req.resume();                       // drain, or the socket hangs
+    return json(res, 409, { error: 'exists', name });
+  }
+  if (fs.existsSync(full) && mode === 'keep') {
+    name = freeName(path.dirname(full), name);
+    full = path.join(path.dirname(full), name);
+  }
 
   // Write to a temporary name and rename on success. An interrupted upload
   // then leaves nothing behind, instead of a truncated installer that looks
@@ -150,13 +178,20 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { title: TITLE, subtitle: SUBTITLE, root: path.basename(ROOT) });
     }
 
+    if (req.method === 'GET' && p === '/api/exists') {
+      const full = safe(url.searchParams.get('path') || '');
+      if (!full || full === ROOT) return json(res, 400, { error: 'bad path' });
+      return json(res, 200, { exists: fs.existsSync(full) });
+    }
+
     if (req.method === 'GET' && p === '/api/list') {
       const items = await list(url.searchParams.get('dir') || '/');
       return items ? json(res, 200, { items }) : json(res, 400, { error: 'bad path' });
     }
 
     if (req.method === 'PUT' && p.startsWith('/api/upload/')) {
-      return await upload(req, res, p.slice('/api/upload'.length));
+      return await upload(req, res, p.slice('/api/upload'.length),
+                          url.searchParams.get('mode'));
     }
 
     if (req.method === 'GET' && p.startsWith('/api/download/')) {
