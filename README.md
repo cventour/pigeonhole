@@ -14,89 +14,116 @@ is meant to stay short.
 **No dependencies.** Node's standard library and nothing else. No install
 step, no lockfile, nothing to update when someone else's package goes wrong.
 
+## Requirements
+
+Node 20 or newer. That is the entire list.
+
+```bash
+node --version
+```
+
+## Install and run
+
+A script for each platform. Both fetch the code, check your Node version and
+start the server. Neither installs anything system-wide or needs admin rights.
+
+macOS, Linux, WSL:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cventour/pigeonhole/main/install.sh -o install.sh
+```
+
+```bash
+bash install.sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/cventour/pigeonhole/main/install.ps1 -OutFile install.ps1
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Windows blocks downloaded scripts by default, which is why that second command
+is longer than `./install.ps1`. It applies to this one run only and changes
+nothing on the machine.
+
+Read the script before you run it. It is about a hundred lines and does
+nothing surprising.
+
+Both take the same options:
+
+| Option | Meaning |
+|---|---|
+| `--dir` / `-Dir` | Where to install. Default `~/pigeonhole`. |
+| `--root` / `-Root` | The directory to serve. Default `<install dir>/files`. |
+| `--port` / `-Port` | Default `3001`. |
+| `--host` / `-Bind` | Bind address. Default `127.0.0.1`. |
+| `--title` / `-Title` | Page heading. |
+| `--no-start` / `-NoStart` | Install without starting. |
+
+So to serve an existing folder to the whole network:
+
+```bash
+bash install.sh --root /srv/files --host 0.0.0.0
+```
+
+Run the script again later and it updates the copy it installed.
+
+## Run it by hand
+
+The scripts save typing, not much else. The manual version is three lines:
+
 ```bash
 git clone https://github.com/cventour/pigeonhole.git
 cd pigeonhole
+node server.js
+```
+
+Open http://localhost:3001. Files land in `./files`, created on first run.
+
+To serve a directory that already exists, point `REPO_ROOT` at it:
+
+```bash
 REPO_ROOT=/srv/files node server.js
 ```
 
-Open http://localhost:3001.
+The path can be anywhere the user running the process can read and write — an
+external drive, a home directory, a network mount.
 
-## Configuration
+## Let other machines reach it
 
-All optional, all environment variables.
+By default it binds `127.0.0.1`, so only the machine it runs on can reach it.
+To open it to the network, bind all interfaces:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `REPO_ROOT` | `./files` | The directory it manages. Created if missing. |
-| `HOST` | `127.0.0.1` | Bind address. Loopback by default, on purpose. |
-| `PORT` | `3001` | |
-| `REPO_TITLE` | `Pigeonhole` | Page title and heading |
-| `REPO_SUBTITLE` | `Drop files in. Take files out.` | Line under the heading |
-
-Branding is configuration rather than code, so one copy serves any deployment.
-
-## There is no authentication
-
-Read that again before you expose it. Pigeonhole assumes it sits on a network
-you trust, or behind something that does the authenticating. Anyone who can
-reach it can upload, rename and delete.
-
-That is a scope decision, not an oversight. Authentication done badly is worse
-than none, and every reverse proxy already does it well: put it behind basic
-auth, an OIDC proxy, a VPN, or a network you control.
-
-It binds `127.0.0.1` by default so that exposing it takes a decision.
-
-## Behind a reverse proxy
-
-Every request the page makes is relative, so it works under any prefix. Two
-things to get right:
-
-```caddy
-redir /files /files/          # the page resolves its API relative to the URL
-handle_path /files/* {
-	reverse_proxy 127.0.0.1:3001
-}
+```bash
+HOST=0.0.0.0 PORT=3001 REPO_ROOT=/srv/files node server.js
 ```
 
-The redirect matters: without the trailing slash, relative API calls resolve
-against the site root and every request 404s.
+Then find the address to hand out:
 
-nginx equivalent:
-
-```nginx
-location = /files { return 301 /files/; }
-location /files/  { proxy_pass http://127.0.0.1:3001/; }
+```bash
+ipconfig getifaddr en0          # macOS
+hostname -I                     # Linux
 ```
 
-## Design notes
+Others open `http://<that-address>:3001`. Read **There is no authentication**
+below before you do this.
 
-Three choices worth explaining, because each looks wrong at first glance.
+## Keep it running
 
-**Uploads are a raw `PUT` body, not `multipart/form-data`.** Multipart is the
-conventional answer and would need a parser — the one dependency this would
-otherwise have. A raw body streams straight to disk, so a four-gigabyte file
-never lands in memory, and there is nothing to audit or update.
+Nothing here needs a supervisor, but the shell that started it owns it. To
+survive a closed terminal:
 
-**The browser uses `XMLHttpRequest`, not `fetch`.** `fetch` still cannot
-report upload progress. A large upload with no progress bar is
-indistinguishable from a hang, so XHR stays until browsers fix that.
+```bash
+nohup env REPO_ROOT=/srv/files node server.js > pigeonhole.log 2>&1 &
+```
 
-**Files upload to `<name>.part` and are renamed on completion.** An
-interrupted transfer then leaves nothing behind, rather than a truncated file
-that looks complete until something tries to use it.
-
-## Safety
-
-Every client-supplied path is resolved and checked against the root before
-use, so `../../etc` lands inside the managed directory rather than outside it.
-Names for rename and mkdir must be a single path component — a separator is
-refused rather than stripped. Filenames render as text, never as markup.
-
-None of that substitutes for the authentication it does not have.
-
-## systemd
+On a machine with systemd, a unit is tidier. Save as
+`/etc/systemd/system/pigeonhole.service`:
 
 ```ini
 [Unit]
@@ -121,6 +148,71 @@ ReadWritePaths=/srv/files
 [Install]
 WantedBy=multi-user.target
 ```
+
+```bash
+sudo systemctl enable --now pigeonhole
+```
+
+```bash
+systemctl status pigeonhole
+```
+
+## Configuration
+
+All optional, all environment variables.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `REPO_ROOT` | `./files` | The directory it manages. Created if missing. |
+| `HOST` | `127.0.0.1` | Bind address. Loopback by default, on purpose. |
+| `PORT` | `3001` | |
+| `REPO_TITLE` | `Pigeonhole` | Page title and heading |
+| `REPO_SUBTITLE` | `Drop files in. Take files out.` | Line under the heading |
+
+Branding is configuration rather than code, so one copy serves any deployment.
+
+Set them inline for a one-off run, or export them for the session:
+
+```bash
+export REPO_ROOT=/srv/files REPO_TITLE="Team Drop" HOST=0.0.0.0
+```
+
+## There is no authentication
+
+Read that again before you expose it. Anyone who can reach it can upload,
+rename and delete. Pigeonhole assumes it sits on a network you trust — a home
+or office LAN, a VPN, a lab segment.
+
+That is a scope decision, not an oversight. Authentication done badly is worse
+than none, so it does none and says so plainly.
+
+It binds `127.0.0.1` by default so that exposing it takes a decision.
+
+## Safety
+
+Every client-supplied path is resolved and checked against the root before
+use, so `../../etc` lands inside the managed directory rather than outside it.
+Names for rename and mkdir must be a single path component — a separator is
+refused rather than stripped. Filenames render as text, never as markup.
+
+None of that substitutes for the authentication it does not have.
+
+## Design notes
+
+Three choices worth explaining, because each looks wrong at first glance.
+
+**Uploads are a raw `PUT` body, not `multipart/form-data`.** Multipart is the
+conventional answer and would need a parser — the one dependency this would
+otherwise have. A raw body streams straight to disk, so a four-gigabyte file
+never lands in memory, and there is nothing to audit or update.
+
+**The browser uses `XMLHttpRequest`, not `fetch`.** `fetch` still cannot
+report upload progress. A large upload with no progress bar is
+indistinguishable from a hang, so XHR stays until browsers fix that.
+
+**Files upload to `<name>.part` and are renamed on completion.** An
+interrupted transfer then leaves nothing behind, rather than a truncated file
+that looks complete until something tries to use it.
 
 ## Licence
 

@@ -6,7 +6,8 @@
 // dependency: no parser to keep current, and the body streams straight to
 // disk, so a 4 GB installer never lands in memory.
 //
-// Listens on loopback. Caddy is the only thing that talks to it.
+// Binds loopback by default; set HOST to expose it. There is no
+// authentication, so it assumes a network you trust.
 
 import http from 'node:http';
 import fs from 'node:fs';

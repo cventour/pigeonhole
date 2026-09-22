@@ -237,7 +237,7 @@ footer a{color:var(--steel-dim)}
 </dialog>
 
 <script>
-// Every request is relative, so this page works wherever Caddy mounts it.
+// Every request is relative, so this page works from whatever URL it is served at.
 const api = (p) => new URL(p, location.href.endsWith('/') ? location.href : location.href + '/').toString();
 let cwd = '/';
 
@@ -354,9 +354,9 @@ function drawCrumbs() {
 
 async function go(dir) { cwd = dir || '/'; await refresh(); }
 
-// A proxy returning 502 while the app restarts sends an empty body, and
-// response.json() then fails with "Unexpected end of JSON input" — which tells
-// the reader nothing about what happened or what to do.
+// A 5xx with an empty body — the server restarting mid-request, say — makes
+// response.json() fail with "Unexpected end of JSON input", which tells the
+// reader nothing about what happened or what to do.
 async function asJson(r) {
   const text = await r.text();
   if (!text) {

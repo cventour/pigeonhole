@@ -10,5 +10,5 @@
   "license": "MIT",
   "keywords": ["file-manager", "upload", "self-hosted", "zero-dependency", "http"],
   "repository": { "type": "git", "url": "git+https://github.com/cventour/pigeonhole.git" },
-  "files": ["server.js", "public", "README.md", "LICENSE"]
+  "files": ["server.js", "public", "install.sh", "install.ps1", "README.md", "LICENSE"]
 }
