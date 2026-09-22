@@ -126,6 +126,41 @@ tbody tr:hover td{background:var(--panel)}
 .msg.err{border-color:var(--danger);color:var(--danger)}
 .msg:empty{display:none}
 
+/* --- modals --- */
+/* Native <dialog>: focus trap, Escape and backdrop come from the browser,
+   which is a lot of correct behaviour for no dependency. */
+dialog{
+  border:1px solid var(--rule-hi);background:var(--panel-lo);color:var(--ink);
+  padding:0;max-width:min(440px,calc(100vw - 32px));width:100%;
+  box-shadow:0 10px 22px -10px rgba(0,0,0,.9),
+             0 1px 0 0 var(--panel-hi) inset;
+}
+dialog::backdrop{background:rgba(6,8,10,.72)}
+.dlg-body{padding:22px clamp(18px,3vw,26px) 0}
+.dlg-body h2{font-family:var(--narrow);font-weight:700;text-transform:uppercase;
+  font-size:1.12rem;letter-spacing:.02em;margin:0 0 10px}
+.dlg-body p{margin:0;color:var(--steel-dim);font-size:.92rem}
+.dlg-body p b{color:var(--ink);font-family:var(--mono);font-size:.88rem;
+  font-weight:500;word-break:break-all}
+.dlg-body .warn{margin-top:10px;color:var(--steel-faint);font-size:.85rem}
+.dlg-body input{width:100%;margin-top:14px;padding:10px 12px;
+  font-family:var(--mono);font-size:.9rem;color:var(--ink);
+  background:var(--panel);border:1px solid var(--rule-hi)}
+.dlg-body input:focus{outline:none;border-color:var(--signal)}
+.dlg-err{margin-top:10px;color:var(--danger);font-family:var(--mono);
+  font-size:.8rem;min-height:1.2em}
+.dlg-foot{display:flex;justify-content:flex-end;gap:10px;
+  padding:18px clamp(18px,3vw,26px) 20px}
+.dlg-foot button{font-family:var(--mono);font-size:.8rem;letter-spacing:.03em;
+  padding:9px 16px;cursor:pointer;border:1px solid var(--rule-hi);
+  background:var(--chassis);color:var(--ink);
+  transition:background .14s ease-out,border-color .14s ease-out}
+.dlg-foot button:hover{background:var(--panel-hi);border-color:var(--steel-faint)}
+.dlg-foot button.go{border-color:var(--signal-dim);color:var(--signal)}
+.dlg-foot button.go:hover{background:var(--signal);color:#0d0f11;border-color:var(--signal)}
+.dlg-foot button.danger{border-color:var(--danger);color:var(--danger)}
+.dlg-foot button.danger:hover{background:var(--danger);color:#0d0f11;border-color:var(--danger)}
+
 footer{border-top:1px solid var(--rule);margin-top:34px;padding:20px 0 40px;
   font-family:var(--mono);font-size:.76rem;color:var(--steel-faint);
   display:flex;flex-wrap:wrap;gap:8px 24px}
@@ -173,6 +208,22 @@ footer a{color:var(--steel-dim)}
   </footer>
 </div>
 
+<dialog id="dlg">
+  <form method="dialog">
+    <div class="dlg-body">
+      <h2 id="dlg-title"></h2>
+      <p id="dlg-text"></p>
+      <p class="warn" id="dlg-warn" hidden></p>
+      <input id="dlg-input" hidden autocomplete="off" spellcheck="false">
+      <div class="dlg-err" id="dlg-err"></div>
+    </div>
+    <div class="dlg-foot">
+      <button value="cancel" id="dlg-cancel">Cancel</button>
+      <button value="ok" id="dlg-ok"></button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 // Every request is relative, so this page works wherever Caddy mounts it.
 const api = (p) => new URL(p, location.href.endsWith('/') ? location.href : location.href + '/').toString();
@@ -195,6 +246,47 @@ const fmtSize = (n) => {
 };
 const fmtDate = (ms) => new Date(ms).toLocaleString(undefined,
   { year:'numeric', month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+
+// One dialog, reused. Returns the typed value, true, or null for cancelled.
+const dlg = $('dlg');
+function ask({ title, text, warn, input, okLabel, danger, validate }) {
+  $('dlg-title').textContent = title;
+  $('dlg-text').innerHTML = '';
+  $('dlg-text').append(...text);
+  const w = $('dlg-warn');
+  w.hidden = !warn; w.textContent = warn || '';
+  const i = $('dlg-input');
+  i.hidden = !input;
+  i.value = input?.value ?? '';
+  const ok = $('dlg-ok');
+  ok.textContent = okLabel;
+  ok.className = danger ? 'danger' : 'go';
+  const err = $('dlg-err'); err.textContent = '';
+
+  return new Promise((resolve) => {
+    const submit = (e) => {
+      if (!input) return;                       // confirm-only: let it close
+      const v = i.value.trim();
+      const problem = validate ? validate(v) : (v ? null : 'Enter a name');
+      if (problem) { e.preventDefault(); err.textContent = problem; i.focus(); }
+    };
+    ok.addEventListener('click', submit);
+    dlg.addEventListener('close', () => {
+      ok.removeEventListener('click', submit);
+      resolve(dlg.returnValue === 'ok' ? (input ? i.value.trim() : true) : null);
+    }, { once: true });
+
+    dlg.showModal();
+    if (input) { i.focus(); i.select(); } else { $('dlg-cancel').focus(); }
+  });
+}
+
+const nameRules = (v) => {
+  if (!v) return 'Enter a name';
+  if (v.includes('/') || v.includes('\\')) return 'A name cannot contain / or \\';
+  if (v === '.' || v === '..') return 'That name is not allowed';
+  return null;
+};
 
 function say(text, isErr) {
   msg.textContent = text || '';
@@ -282,23 +374,46 @@ async function post(route, body) {
   return j;
 }
 
+const strong = (t) => { const b = document.createElement('b'); b.textContent = t; return b; };
+const txt = (t) => document.createTextNode(t);
+
 async function rename(target, current) {
-  const name = prompt('New name', current);
-  if (!name || name === current) return;
+  const name = await ask({
+    title: 'Rename',
+    text: [txt('Renaming '), strong(current)],
+    input: { value: current },
+    okLabel: 'Rename',
+    validate: nameRules,
+  });
+  if (name === null || name === current) return;
   try { await post('rename', { target, name }); say('Renamed to ' + name); refresh(); }
   catch (e) { say(e.message, true); }
 }
 
 async function remove(target, name, isDir) {
-  const what = isDir ? `the folder "${name}" and everything in it` : `"${name}"`;
-  if (!confirm('Delete ' + what + '? This cannot be undone.')) return;
+  const confirmed = await ask({
+    title: isDir ? 'Delete folder' : 'Delete file',
+    text: [txt('Delete '), strong(name), txt('?')],
+    warn: isDir
+      ? 'Everything inside it goes too. This cannot be undone.'
+      : 'This cannot be undone.',
+    okLabel: 'Delete',
+    danger: true,
+  });
+  if (!confirmed) return;
   try { await post('delete', { target }); say('Deleted ' + name); refresh(); }
   catch (e) { say(e.message, true); }
 }
 
 $('btn-mkdir').onclick = async () => {
-  const name = prompt('Folder name');
-  if (!name) return;
+  const name = await ask({
+    title: 'New folder',
+    text: [txt('Created inside '), strong(cwd)],
+    input: { value: '' },
+    okLabel: 'Create',
+    validate: nameRules,
+  });
+  if (name === null) return;
   try { await post('mkdir', { dir: cwd, name }); say('Created ' + name); refresh(); }
   catch (e) { say(e.message, true); }
 };
