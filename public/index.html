@@ -130,9 +130,12 @@ tbody tr:hover td{background:var(--panel)}
 /* Native <dialog>: focus trap, Escape and backdrop come from the browser,
    which is a lot of correct behaviour for no dependency. */
 dialog{
-  border:1px solid var(--rule-hi);background:var(--panel-lo);color:var(--ink);
+  /* A 2px edge, not a hairline under a soft glow: in this interface a modal
+     is a panel front, and it should read as one thing sitting on top rather
+     than a card floating over a blur. */
+  border:2px solid var(--rule-hi);background:var(--panel-lo);color:var(--ink);
   padding:0;max-width:min(440px,calc(100vw - 32px));width:100%;
-  box-shadow:0 10px 22px -10px rgba(0,0,0,.9),
+  box-shadow:0 8px 14px -8px rgba(0,0,0,.9),
              0 1px 0 0 var(--panel-hi) inset;
 }
 dialog::backdrop{background:rgba(6,8,10,.72)}
