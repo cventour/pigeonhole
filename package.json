@@ -1,0 +1,14 @@
+{
+  "name": "pigeonhole",
+  "version": "1.0.0",
+  "description": "A small self-hosted file manager with no dependencies. Drag-and-drop upload with progress, browse, rename, delete, download.",
+  "type": "module",
+  "main": "server.js",
+  "bin": { "pigeonhole": "./server.js" },
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=20" },
+  "license": "MIT",
+  "keywords": ["file-manager", "upload", "self-hosted", "zero-dependency", "http"],
+  "repository": { "type": "git", "url": "git+https://github.com/cventour/pigeonhole.git" },
+  "files": ["server.js", "public", "README.md", "LICENSE"]
+}
