@@ -14,7 +14,10 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
-const ROOT = process.env.REPO_ROOT || path.join(process.cwd(), 'files');
+// Resolved, because safe() compares against this string: a relative
+// REPO_ROOT would never match an absolute resolved path, and every
+// request would fail the containment check.
+const ROOT = path.resolve(process.env.REPO_ROOT || path.join(process.cwd(), 'files'));
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC = path.join(import.meta.dirname, 'public');
