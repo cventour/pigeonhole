@@ -116,12 +116,20 @@ tbody tr:hover td{background:var(--panel)}
 .ic{flex:0 0 14px;height:14px;opacity:.75}
 .sz,.dt{font-family:var(--mono);font-size:.8rem;color:var(--steel-dim);
   font-variant-numeric:tabular-nums;white-space:nowrap}
-.row-act{display:flex;gap:4px;justify-content:flex-end}
-.row-act button{background:none;border:1px solid transparent;color:var(--steel-faint);
-  cursor:pointer;padding:4px 8px;font-family:var(--mono);font-size:.74rem;
-  letter-spacing:.04em;text-transform:uppercase}
-.row-act button:hover{color:var(--ink);border-color:var(--rule-hi)}
-.row-act button.del:hover{color:var(--danger);border-color:var(--danger)}
+.row-act{display:flex;gap:2px;justify-content:flex-end}
+.row-act button{position:relative;display:grid;place-items:center;width:30px;height:30px;
+  padding:0;background:none;border:1px solid transparent;color:var(--steel-faint);cursor:pointer}
+.row-act svg{width:15px;height:15px}
+.row-act button:hover,.row-act button:focus-visible{color:var(--ink);border-color:var(--rule-hi)}
+.row-act button.del:hover,.row-act button.del:focus-visible{color:var(--danger);border-color:var(--danger)}
+/* The label, shown on hover or keyboard focus. Drawn by CSS rather than the
+   title attribute, which waits about a second and cannot be styled. */
+.row-act button::after{content:attr(aria-label);position:absolute;bottom:calc(100% + 6px);
+  right:0;white-space:nowrap;pointer-events:none;z-index:2;
+  font-family:var(--mono);font-size:.72rem;letter-spacing:.03em;color:var(--ink);
+  background:var(--panel-hi);border:1px solid var(--rule-hi);padding:3px 8px;
+  opacity:0;transform:translateY(2px);transition:opacity .12s ease-out,transform .12s ease-out}
+.row-act button:hover::after,.row-act button:focus-visible::after{opacity:1;transform:none}
 th.ck,td.ck{width:1%;padding-right:0}
 .ck input{margin:0;width:15px;height:15px;accent-color:var(--signal);cursor:pointer;
   vertical-align:middle}
@@ -259,6 +267,9 @@ const rows = $('rows'), crumbs = $('crumbs'), queue = $('queue'), msg = $('msg')
 const ICON = {
   dir: '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 4.2h4l1.3 1.6h7.7v7.7h-13z"/></svg>',
   file:'<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3.3 1.8h6l3.4 3.4v9h-9.4z"/><path d="M9.3 1.8v3.5h3.4"/></svg>',
+  dl:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M2.5 13.5h11"/></svg>',
+  rn:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M10.6 2.6l2.8 2.8-7.9 7.9H2.7v-2.8z"/><path d="M9.2 4l2.8 2.8"/></svg>',
+  del: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.3h11"/><path d="M6.2 4.3V2.6h3.6v1.7"/><path d="M3.9 4.3l.7 9.1h6.8l.7-9.1"/><path d="M6.7 6.8v4.2M9.3 6.8v4.2"/></svg>',
   up:  '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 12.5V4"/><path d="M4.3 7.6 8 3.9l3.7 3.7"/></svg>',
 };
 
@@ -472,9 +483,9 @@ async function refresh() {
       <td class="sz">${fmtSize(it.size)}</td>
       <td class="dt">${fmtDate(it.mtime)}</td>
       <td><div class="row-act">
-        <button data-a="dl">Download</button>
-        <button data-a="rn">Rename</button>
-        <button data-a="del" class="del">Delete</button>
+        <button data-a="dl" aria-label="${it.dir ? 'Download as zip' : 'Download'}">${ICON.dl}</button>
+        <button data-a="rn" aria-label="Rename">${ICON.rn}</button>
+        <button data-a="del" class="del" aria-label="Delete">${ICON.del}</button>
       </div></td>`;
     tr.querySelector('.t').textContent = it.name;   // never innerHTML a filename
     if (it.dir) tr.querySelector('.nm').onclick = () => go(full);
@@ -482,7 +493,6 @@ async function refresh() {
     box.setAttribute('aria-label', 'Select ' + it.name);
     // Read shiftKey on click: change events do not carry it.
     box.onclick = (e) => toggle(full, box.checked, e.shiftKey);
-    tr.querySelector('[data-a="dl"]').title = it.dir ? 'Download as zip' : '';
     tr.querySelector('[data-a="dl"]').onclick = () => download([full]);
     tr.querySelector('[data-a="rn"]').onclick = () => rename(full, it.name);
     tr.querySelector('[data-a="del"]').onclick = () => remove(full, it.name, it.dir);
