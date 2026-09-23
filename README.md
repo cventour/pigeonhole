@@ -260,6 +260,16 @@ cd pigeonhole
 node server.js
 ```
 
+Windows does not ship with git, so on a fresh machine that first line fails.
+Take the zip instead — this needs nothing that is not already there:
+
+```powershell
+irm https://github.com/cventour/pigeonhole/archive/refs/heads/main.zip -OutFile pigeonhole.zip
+Expand-Archive pigeonhole.zip -DestinationPath .
+cd pigeonhole-main
+node server.js
+```
+
 Files land in `.\files`, created on first run.
 
 ## Serve a folder you already have
@@ -318,7 +328,13 @@ The window that started it owns it. To put it in the background for this
 session:
 
 ```powershell
-Start-Process node -ArgumentList "server.js" -WorkingDirectory "$HOME\pigeonhole" -WindowStyle Hidden
+$p = Start-Process node -ArgumentList "server.js" -WorkingDirectory "$HOME\pigeonhole" -WindowStyle Hidden -PassThru
+```
+
+`-PassThru` hands back the process, so you can stop it again:
+
+```powershell
+Stop-Process -Id $p.Id
 ```
 
 To survive a reboot, register a scheduled task from an **administrator**
@@ -355,6 +371,9 @@ Start-ScheduledTask -TaskName Pigeonhole
 ```powershell
 Get-ScheduledTask -TaskName Pigeonhole | Get-ScheduledTaskInfo
 ```
+
+A `LastTaskResult` of `267009` is not an error — it is `0x41301`, "the task is
+currently running", which is what you want to see.
 
 Stop it, or remove it entirely:
 
