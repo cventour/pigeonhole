@@ -8,8 +8,10 @@ documents to a handful of machines, and collecting files back from them
 without email, chat attachments or a cloud account.
 
 Drag files in or browse for them, with a progress bar on each. Browse folders,
-rename, delete, download, make folders. That is the whole feature list and it
-is meant to stay short.
+rename, delete, download, make folders. Tick several items to download them
+together; a folder, or any selection of more than one file, arrives as a
+single zip, streamed as it is built. That is the whole feature list and it is
+meant to stay short.
 
 **No dependencies.** Node's standard library and nothing else. No install
 step, no lockfile, nothing to update when someone else's package goes wrong.

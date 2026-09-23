@@ -122,6 +122,12 @@ tbody tr:hover td{background:var(--panel)}
   letter-spacing:.04em;text-transform:uppercase}
 .row-act button:hover{color:var(--ink);border-color:var(--rule-hi)}
 .row-act button.del:hover{color:var(--danger);border-color:var(--danger)}
+th.ck,td.ck{width:1%;padding-right:0}
+.ck input{margin:0;width:15px;height:15px;accent-color:var(--signal);cursor:pointer;
+  vertical-align:middle}
+tbody tr.sel td{background:var(--panel)}
+tbody tr.sel .nm{color:var(--signal)}
+button.act[hidden]{display:none}
 
 .empty{padding:38px 16px;text-align:center;color:var(--steel-faint);
   font-family:var(--mono);font-size:.85rem}
@@ -191,6 +197,7 @@ footer a{color:var(--steel-dim)}
 
   <div class="bar">
     <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
+    <button class="act" id="btn-dl" hidden></button>
     <button class="act" id="btn-mkdir">New folder</button>
     <button class="act primary" id="btn-pick">Upload files</button>
     <input type="file" id="picker" multiple hidden>
@@ -207,6 +214,7 @@ footer a{color:var(--steel-dim)}
   <div class="tablewrap">
     <table>
       <thead><tr>
+        <th class="ck"><input type="checkbox" id="sel-all" aria-label="Select all"></th>
         <th style="width:52%">Name</th><th>Size</th><th>Modified</th><th></th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -235,6 +243,10 @@ footer a{color:var(--steel-dim)}
     <div class="dlg-foot" id="dlg-foot"></div>
   </form>
 </dialog>
+
+<!-- Zip downloads go out as a plain form POST, so the browser handles the
+     download natively instead of the page buffering the archive. -->
+<form id="zipform" method="post" hidden></form>
 
 <script>
 // Every request is relative, so this page works from whatever URL it is served at.
@@ -352,7 +364,65 @@ function drawCrumbs() {
   $('drop-target').textContent = cwd;
 }
 
-async function go(dir) { cwd = dir || '/'; await refresh(); }
+async function go(dir) { cwd = dir || '/'; selected.clear(); await refresh(); }
+
+// --- selection and download ------------------------------------------------
+// Paths of the ticked rows in this folder. A single file downloads as itself;
+// a folder, or more than one of anything, arrives as one zip.
+const selected = new Set();
+let shown = [];            // [{ full, dir, tr }] in display order, for ranges
+let anchor = null;         // last row clicked, for shift-click ranges
+
+const fileUrl = (full) => api('api/download' + full.split('/').map(encodeURIComponent).join('/'));
+
+function download(paths) {
+  const one = shown.find(r => r.full === paths[0]);
+  if (paths.length === 1 && one && !one.dir) { location.href = fileUrl(paths[0]); return; }
+  const f = $('zipform');
+  f.action = api('api/zip');
+  f.innerHTML = '';
+  for (const [k, v] of [['dir', cwd], ...paths.map(p => ['path', p])]) {
+    const i = document.createElement('input');
+    i.type = 'hidden'; i.name = k; i.value = v;
+    f.append(i);
+  }
+  f.submit();
+}
+
+function drawSelection() {
+  for (const r of shown) {
+    r.tr.classList.toggle('sel', selected.has(r.full));
+    r.tr.querySelector('.ck input').checked = selected.has(r.full);
+  }
+  const all = $('sel-all');
+  all.checked = shown.length > 0 && selected.size === shown.length;
+  all.indeterminate = selected.size > 0 && selected.size < shown.length;
+  all.disabled = !shown.length;
+  const b = $('btn-dl');
+  b.hidden = !selected.size;
+  const zipped = selected.size > 1 || shown.some(r => r.dir && selected.has(r.full));
+  b.textContent = `Download ${selected.size} selected` + (zipped ? ' as zip' : '');
+}
+
+function toggle(full, on, shift) {
+  const i = shown.findIndex(r => r.full === full);
+  const a = shown.findIndex(r => r.full === anchor);
+  if (shift && a !== -1) {
+    const [lo, hi] = i < a ? [i, a] : [a, i];
+    for (const r of shown.slice(lo, hi + 1)) on ? selected.add(r.full) : selected.delete(r.full);
+  } else {
+    on ? selected.add(full) : selected.delete(full);
+  }
+  anchor = full;
+  drawSelection();
+}
+
+$('sel-all').onchange = (e) => {
+  selected.clear();
+  if (e.target.checked) shown.forEach(r => selected.add(r.full));
+  drawSelection();
+};
+$('btn-dl').onclick = () => download(shown.map(r => r.full).filter(f => selected.has(f)));
 
 // A 5xx with an empty body — the server restarting mid-request, say — makes
 // response.json() fail with "Unexpected end of JSON input", which tells the
@@ -371,6 +441,8 @@ async function asJson(r) {
 async function refresh() {
   drawCrumbs();
   rows.innerHTML = '';
+  shown = [];
+  drawSelection();
   let data;
   try {
     const r = await fetch(api('api/list?dir=' + encodeURIComponent(cwd)));
@@ -381,13 +453,13 @@ async function refresh() {
   if (cwd !== '/') {
     const tr = document.createElement('tr');
     const up = cwd.split('/').slice(0, -1).join('/') || '/';
-    tr.innerHTML = `<td><span class="nm link">${ICON.up}..</span></td><td></td><td></td><td></td>`;
+    tr.innerHTML = `<td class="ck"></td><td><span class="nm link">${ICON.up}..</span></td><td></td><td></td><td></td>`;
     tr.querySelector('.nm').onclick = () => go(up);
     rows.append(tr);
   }
 
   if (!data.items.length && cwd === '/') {
-    rows.innerHTML = '<tr><td colspan="4" class="empty">Empty. Drop files above to upload.</td></tr>';
+    rows.innerHTML = '<tr><td colspan="5" class="empty">Empty. Drop files above to upload.</td></tr>';
     return;
   }
 
@@ -395,22 +467,31 @@ async function refresh() {
     const full = (cwd === '/' ? '' : cwd) + '/' + it.name;
     const tr = document.createElement('tr');
     tr.innerHTML = `
+      <td class="ck"><input type="checkbox"></td>
       <td><span class="nm${it.dir ? ' link' : ''}">${it.dir ? ICON.dir : ICON.file}<span class="t"></span></span></td>
       <td class="sz">${fmtSize(it.size)}</td>
       <td class="dt">${fmtDate(it.mtime)}</td>
       <td><div class="row-act">
-        ${it.dir ? '' : '<button data-a="dl">Download</button>'}
+        <button data-a="dl">Download</button>
         <button data-a="rn">Rename</button>
         <button data-a="del" class="del">Delete</button>
       </div></td>`;
     tr.querySelector('.t').textContent = it.name;   // never innerHTML a filename
     if (it.dir) tr.querySelector('.nm').onclick = () => go(full);
-    tr.querySelector('[data-a="dl"]')?.addEventListener('click',
-      () => location.href = api('api/download' + full.split('/').map(encodeURIComponent).join('/')));
+    const box = tr.querySelector('.ck input');
+    box.setAttribute('aria-label', 'Select ' + it.name);
+    // Read shiftKey on click: change events do not carry it.
+    box.onclick = (e) => toggle(full, box.checked, e.shiftKey);
+    tr.querySelector('[data-a="dl"]').title = it.dir ? 'Download as zip' : '';
+    tr.querySelector('[data-a="dl"]').onclick = () => download([full]);
     tr.querySelector('[data-a="rn"]').onclick = () => rename(full, it.name);
     tr.querySelector('[data-a="del"]').onclick = () => remove(full, it.name, it.dir);
     rows.append(tr);
+    shown.push({ full, dir: it.dir, tr });
   }
+  // Keep ticks across a refresh (after a rename or upload), minus what is gone.
+  for (const f of [...selected]) if (!shown.some(r => r.full === f)) selected.delete(f);
+  drawSelection();
 }
 
 async function post(route, body) {
