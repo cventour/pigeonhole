@@ -268,6 +268,7 @@ const ICON = {
   dir: '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 4.2h4l1.3 1.6h7.7v7.7h-13z"/></svg>',
   file:'<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3.3 1.8h6l3.4 3.4v9h-9.4z"/><path d="M9.3 1.8v3.5h3.4"/></svg>',
   dl:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M2.5 13.5h11"/></svg>',
+  wg:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3.5 6 8l-4 4.5"/><path d="M8.5 12.5h5.5"/></svg>',
   rn:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M10.6 2.6l2.8 2.8-7.9 7.9H2.7v-2.8z"/><path d="M9.2 4l2.8 2.8"/></svg>',
   del: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.3h11"/><path d="M6.2 4.3V2.6h3.6v1.7"/><path d="M3.9 4.3l.7 9.1h6.8l.7-9.1"/><path d="M6.7 6.8v4.2M9.3 6.8v4.2"/></svg>',
   up:  '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 12.5V4"/><path d="M4.3 7.6 8 3.9l3.7 3.7"/></svg>',
@@ -400,6 +401,31 @@ function download(paths) {
   f.submit();
 }
 
+// A wget line for a file, to run on another machine. -O pins the saved name,
+// since wget would otherwise take it from the URL. The page's own address is
+// used, so it only works for a host that can reach this server by that name.
+const shq = (v) => "'" + v.replace(/'/g, "'\\''") + "'";
+
+async function copyWget(full, name) {
+  const cmd = `wget -O ${shq(name)} ${shq(fileUrl(full))}`;
+  try {
+    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(cmd);
+    else {
+      // Plain http on a LAN address is not a secure context, so there is no
+      // clipboard API; fall back to copying from a throwaway textarea.
+      const ta = document.createElement('textarea');
+      ta.value = cmd; ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.append(ta); ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (!ok) throw new Error('copy blocked');
+    }
+  } catch { say('Could not copy to the clipboard.', true); return; }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  say(local ? 'Copied, but this page is open as ' + location.hostname + ', which another machine cannot reach. Open it by the server\'s network address first.'
+            : 'Copied wget command for ' + name);
+}
+
 function drawSelection() {
   for (const r of shown) {
     r.tr.classList.toggle('sel', selected.has(r.full));
@@ -484,6 +510,7 @@ async function refresh() {
       <td class="dt">${fmtDate(it.mtime)}</td>
       <td><div class="row-act">
         <button data-a="dl" aria-label="${it.dir ? 'Download as zip' : 'Download'}">${ICON.dl}</button>
+        ${it.dir ? '' : `<button data-a="wg" aria-label="Copy wget command">${ICON.wg}</button>`}
         <button data-a="rn" aria-label="Rename">${ICON.rn}</button>
         <button data-a="del" class="del" aria-label="Delete">${ICON.del}</button>
       </div></td>`;
@@ -494,6 +521,8 @@ async function refresh() {
     // Read shiftKey on click: change events do not carry it.
     box.onclick = (e) => toggle(full, box.checked, e.shiftKey);
     tr.querySelector('[data-a="dl"]').onclick = () => download([full]);
+    const wg = tr.querySelector('[data-a="wg"]');
+    if (wg) wg.onclick = () => copyWget(full, it.name);
     tr.querySelector('[data-a="rn"]').onclick = () => rename(full, it.name);
     tr.querySelector('[data-a="del"]').onclick = () => remove(full, it.name, it.dir);
     rows.append(tr);
