@@ -131,6 +131,12 @@ tbody tr:hover td{background:var(--panel)}
   opacity:0;transform:translateY(2px);transition:opacity .12s ease-out,transform .12s ease-out}
 .row-act button:hover::after,.row-act button:focus-visible::after{opacity:1;transform:none}
 th.ck,td.ck{width:1%;padding-right:0}
+th button.sort{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+th button.sort:hover,th[aria-sort] button.sort{color:var(--ink)}
+th button.sort:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+th button.sort::after{content:"";width:8px;text-align:center;color:var(--signal)}
+th[aria-sort="ascending"] button.sort::after{content:"\25B4"}
+th[aria-sort="descending"] button.sort::after{content:"\25BE"}
 .ck input{margin:0;width:15px;height:15px;accent-color:var(--signal);cursor:pointer;
   vertical-align:middle}
 tbody tr.sel td{background:var(--panel)}
@@ -223,7 +229,9 @@ footer a{color:var(--steel-dim)}
     <table>
       <thead><tr>
         <th class="ck"><input type="checkbox" id="sel-all" aria-label="Select all"></th>
-        <th style="width:52%">Name</th><th>Size</th><th>Modified</th><th></th>
+        <th style="width:52%" data-k="name"><button class="sort">Name</button></th>
+        <th data-k="size"><button class="sort">Size</button></th>
+        <th data-k="mtime"><button class="sort">Modified</button></th><th></th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -475,17 +483,60 @@ async function asJson(r) {
   catch { throw new Error(`Unexpected response (HTTP ${r.status})`); }
 }
 
+// --- sorting ---------------------------------------------------------------
+// Folders stay above files whatever the order, the way both Explorer and a
+// person scanning for a folder expect. Folders have no size, so under Size
+// they fall back to name order. Remembered per browser, not per folder.
+let sort = { key: 'name', dir: 1 };
+try { Object.assign(sort, JSON.parse(localStorage.getItem('pigeonhole.sort')) || {}); } catch {}
+// A first click on Size or Modified wants the biggest or newest first.
+const FIRST_DIR = { name: 1, size: -1, mtime: -1 };
+let items = [];
+
+function sorted(list) {
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  const cmp = sort.key === 'name' ? byName
+    : (a, b) => ((a[sort.key] ?? 0) - (b[sort.key] ?? 0)) || byName(a, b);
+  return [...list].sort((a, b) => (b.dir - a.dir)
+    || (a.dir && sort.key === 'size' ? byName(a, b) : cmp(a, b) * sort.dir));
+}
+
+function drawSortHeads() {
+  for (const th of document.querySelectorAll('th[data-k]')) {
+    if (th.dataset.k === sort.key) th.setAttribute('aria-sort', sort.dir > 0 ? 'ascending' : 'descending');
+    else th.removeAttribute('aria-sort');
+  }
+}
+
+for (const th of document.querySelectorAll('th[data-k]')) {
+  th.querySelector('button').onclick = () => {
+    const k = th.dataset.k;
+    sort = k === sort.key ? { key: k, dir: -sort.dir } : { key: k, dir: FIRST_DIR[k] };
+    try { localStorage.setItem('pigeonhole.sort', JSON.stringify(sort)); } catch {}
+    render();
+  };
+}
+
 async function refresh() {
   drawCrumbs();
-  rows.innerHTML = '';
-  shown = [];
-  drawSelection();
   let data;
   try {
     const r = await fetch(api('api/list?dir=' + encodeURIComponent(cwd)));
     data = await asJson(r);
     if (!r.ok) throw new Error(data.error || r.statusText);
-  } catch (e) { say('Could not list this folder: ' + e.message, true); return; }
+  } catch (e) {
+    rows.innerHTML = ''; shown = []; drawSelection();
+    say('Could not list this folder: ' + e.message, true); return;
+  }
+  items = data.items;
+  render();
+}
+
+// Redraws from the last listing, so re-sorting does not go back to the server.
+function render() {
+  drawSortHeads();
+  rows.innerHTML = '';
+  shown = [];
 
   if (cwd !== '/') {
     const tr = document.createElement('tr');
@@ -495,12 +546,13 @@ async function refresh() {
     rows.append(tr);
   }
 
-  if (!data.items.length && cwd === '/') {
+  if (!items.length && cwd === '/') {
     rows.innerHTML = '<tr><td colspan="5" class="empty">Empty. Drop files above to upload.</td></tr>';
+    selected.clear(); drawSelection();
     return;
   }
 
-  for (const it of data.items) {
+  for (const it of sorted(items)) {
     const full = (cwd === '/' ? '' : cwd) + '/' + it.name;
     const tr = document.createElement('tr');
     tr.innerHTML = `
