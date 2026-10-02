@@ -193,6 +193,34 @@ dialog::backdrop{background:rgba(6,8,10,.72)}
 .dlg-foot button.danger{border-color:var(--danger);color:var(--danger)}
 .dlg-foot button.danger:hover{background:var(--danger);color:#0d0f11;border-color:var(--danger)}
 
+/* --- settings dialog --- */
+dialog.wide{max-width:min(500px,calc(100vw - 32px))}
+.set-sw{display:flex;align-items:center;gap:10px;margin:0;cursor:pointer;
+  font-family:var(--mono);font-size:.84rem;color:var(--ink)}
+.dlg-body .set-sw input,.dlg-body .set-opt input{width:auto;margin:0;accent-color:var(--signal)}
+.set-sec{margin:18px 0 0;padding:16px 0 0;border-top:1px solid var(--rule)}
+.set-sec .hint{margin:6px 0 0 26px;color:var(--steel-faint);font-size:.82rem}
+.set-grid{display:grid;grid-template-columns:1fr 92px;gap:0 12px;margin-top:14px}
+.set-grid label,.set-two label{display:block;font-family:var(--mono);font-size:.72rem;
+  letter-spacing:.05em;text-transform:uppercase;color:var(--steel-faint)}
+.set-grid input,.set-two input{margin-top:6px!important}
+.set-two{display:grid;grid-template-columns:1fr 140px;gap:0 12px;margin-top:12px}
+.set-opt{display:flex;align-items:flex-start;gap:10px;margin-top:16px;cursor:pointer;
+  font-family:var(--mono);font-size:.8rem;color:var(--steel-dim)}
+.set-opt input{margin-top:3px!important}
+.set-test{display:flex;align-items:center;gap:14px;margin-top:18px}
+.set-test button{font-family:var(--mono);font-size:.78rem;letter-spacing:.03em;padding:8px 14px;
+  cursor:pointer;border:1px solid var(--rule-hi);background:var(--chassis);color:var(--ink);
+  flex:none;transition:background .14s ease-out,border-color .14s ease-out}
+.set-test button:hover:not(:disabled){background:var(--panel-hi);border-color:var(--steel-faint)}
+.set-test button:disabled{opacity:.55;cursor:default}
+.set-result{font-family:var(--mono);font-size:.78rem;color:var(--steel-dim);min-width:0;
+  overflow-wrap:anywhere}
+.set-result.ok{color:var(--ink)}
+.set-result.ok::before{content:"\25CF  ";color:#3fb950}
+.set-result.bad{color:var(--danger)}
+.set-result.bad::before{content:"\25CF  "}
+
 footer{border-top:1px solid var(--rule);margin-top:34px;padding:20px 0 40px;
   font-family:var(--mono);font-size:.76rem;color:var(--steel-faint);
   display:flex;flex-wrap:wrap;gap:8px 24px}
@@ -212,6 +240,7 @@ footer a{color:var(--steel-dim)}
   <div class="bar">
     <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
     <button class="act" id="btn-dl" hidden></button>
+    <button class="act" id="btn-settings">Settings</button>
     <button class="act" id="btn-mkdir">New folder</button>
     <button class="act primary" id="btn-pick">Upload files</button>
     <input type="file" id="picker" multiple hidden>
@@ -239,6 +268,7 @@ footer a{color:var(--steel-dim)}
 
   <footer>
     <span id="rootname"></span>
+    <span id="scanstate"></span>
     <span>no authentication — trusted networks only</span>
     <span><a href="https://github.com/cventour/pigeonhole">pigeonhole</a></span>
   </footer>
@@ -257,6 +287,42 @@ footer a{color:var(--steel-dim)}
       <div class="dlg-err" id="dlg-err"></div>
     </div>
     <div class="dlg-foot" id="dlg-foot"></div>
+  </form>
+</dialog>
+
+<dialog id="settings" class="wide">
+  <form id="settings-form" novalidate>
+    <div class="dlg-body">
+      <h2>Settings</h2>
+      <p>Uploads are checked by an ICAP server before they appear in the listing.</p>
+
+      <div class="set-sec">
+        <label class="set-sw"><input type="checkbox" id="s-enabled"> Scan uploads with an ICAP server</label>
+        <div class="set-grid">
+          <div><label for="s-host">Server</label>
+            <input id="s-host" autocomplete="off" spellcheck="false" placeholder="icap.example.net"></div>
+          <div><label for="s-port">Port</label>
+            <input id="s-port" inputmode="numeric" autocomplete="off" placeholder="1344"></div>
+        </div>
+        <div class="set-two">
+          <div><label for="s-service">Service</label>
+            <input id="s-service" autocomplete="off" spellcheck="false" placeholder="omsscan"></div>
+          <div><label for="s-timeout">Timeout (s)</label>
+            <input id="s-timeout" inputmode="numeric" autocomplete="off" placeholder="120"></div>
+        </div>
+        <label class="set-opt"><input type="checkbox" id="s-closed">
+          <span>Reject the upload if the scanner cannot be reached or cannot scan</span></label>
+        <div class="set-test">
+          <button type="button" id="s-test">Test connection</button>
+          <span class="set-result" id="s-result" role="status"></span>
+        </div>
+      </div>
+      <div class="dlg-err" id="s-err"></div>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" id="s-cancel">Cancel</button>
+      <button type="submit" class="go" id="s-save">Save</button>
+    </div>
   </form>
 </dialog>
 
@@ -639,6 +705,83 @@ $('btn-mkdir').onclick = async () => {
   catch (e) { say(e.message, true); }
 };
 
+// --- settings --------------------------------------------------------------
+// The server owns the settings; this reads them when the dialog opens and
+// sends them back whole on Save. `scanOn` only decides whether an upload that
+// has finished sending says "scanning" while it waits for the verdict.
+let scanOn = false;
+
+function drawScanState(c) {
+  scanOn = !!(c && c.enabled);
+  $('scanstate').textContent = scanOn ? `scanning uploads via icap://${c.host}:${c.port}` : '';
+}
+
+const settingsDlg = $('settings');
+const sv = (id) => $(id).value.trim();
+const formIcap = () => ({
+  enabled: $('s-enabled').checked, host: sv('s-host'),
+  port: sv('s-port') === '' ? 1344 : Number(sv('s-port')),
+  service: sv('s-service') || 'omsscan',
+  timeout: sv('s-timeout') === '' ? 120 : Number(sv('s-timeout')),
+  failClosed: $('s-closed').checked,
+});
+
+function showResult(text, cls) {
+  const r = $('s-result'); r.textContent = text || ''; r.className = 'set-result' + (cls ? ' ' + cls : '');
+}
+
+$('btn-settings').onclick = async () => {
+  $('s-err').textContent = ''; showResult('');
+  let c;
+  try {
+    const r = await fetch(api('api/settings'));
+    const j = await asJson(r);
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    c = j.icap;
+  } catch (e) { say('Could not read the settings: ' + e.message, true); return; }
+  $('s-enabled').checked = c.enabled;
+  $('s-host').value = c.host;
+  $('s-port').value = c.port;
+  $('s-service').value = c.service;
+  $('s-timeout').value = c.timeout;
+  $('s-closed').checked = c.failClosed;
+  settingsDlg.showModal();
+  $('s-host').focus();
+};
+
+$('s-cancel').onclick = () => settingsDlg.close();
+
+$('s-test').onclick = async () => {
+  const b = $('s-test'), c = formIcap();
+  $('s-err').textContent = '';
+  if (!c.host) { showResult('Enter the server first', 'bad'); $('s-host').focus(); return; }
+  b.disabled = true; showResult('Testing…');
+  try {
+    const j = await post('settings/icap-test', c);
+    showResult(j.ok ? `${j.server} answered and scanned a test file (${j.ms} ms)` : j.error, j.ok ? 'ok' : 'bad');
+  } catch (e) { showResult(e.message, 'bad'); }
+  b.disabled = false;
+};
+
+$('settings-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const save = $('s-save'); save.disabled = true;
+  try {
+    const r = await fetch(api('api/settings'), {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ icap: formIcap() }),
+    });
+    const j = await asJson(r);
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    drawScanState(j.icap);
+    settingsDlg.close();
+    say(j.icap.enabled ? 'Uploads will be scanned' : 'Settings saved. Scanning is off');
+  } catch (err) { $('s-err').textContent = err.message; }
+  save.disabled = false;
+};
+
+fetch(api('api/settings')).then(r => r.json()).then(j => drawScanState(j.icap)).catch(() => {});
+
 // --- uploads ---------------------------------------------------------------
 // XHR rather than fetch: fetch still cannot report upload progress, and a
 // multi-gigabyte installer with no progress bar looks indistinguishable from
@@ -656,6 +799,7 @@ function upload(file, card, mode) {
   const pct = card.querySelector('.q-pct'), bar = card.querySelector('.q-bar i');
   bar.style.width = '0%';
   card.querySelector('.q-retry')?.remove();
+  card.querySelector('.q-detail')?.remove();
 
   return new Promise((resolve) => {
     const dest = (cwd === '/' ? '' : cwd) + '/' + file.name;
@@ -667,14 +811,23 @@ function upload(file, card, mode) {
       const p = Math.round(e.loaded / e.total * 100);
       pct.textContent = p + '%'; bar.style.width = p + '%';
     };
+    // All bytes are with the server; what remains is the scanner's verdict.
+    xhr.upload.onload = () => { if (scanOn) { pct.textContent = 'scanning…'; bar.style.width = '100%'; } };
     xhr.onload = () => {
+      let j = {};
+      try { j = JSON.parse(xhr.responseText); } catch {}
       if (xhr.status === 200) {
         card.classList.add('done');
         pct.textContent = fmtSize(file.size); bar.style.width = '100%';
         setTimeout(() => card.remove(), 2500);
+        if (j.scan === 'skipped') say(`${file.name} was kept but not scanned: ${j.note}`, true);
+      } else if (xhr.status === 422) {
+        // A verdict, not a fault: retrying the same file cannot change it.
+        fail(card, pct, j.threat ? `blocked: ${j.threat}` : 'blocked by scanner', file, false, j.reason);
+      } else if (j.error === 'scan failed') {
+        fail(card, pct, 'not scanned, rejected', file, true, j.detail);
       } else {
-        let m = 'failed';
-        try { m = JSON.parse(xhr.responseText).error || m; } catch {}
+        let m = j.error || 'failed';
         if (xhr.status === 409) m = 'already exists';
         if (xhr.status >= 500) m = 'server restarting';
         fail(card, pct, m, file);
@@ -694,14 +847,20 @@ const PARALLEL = 3;
 // Nothing partial is left on the server when an upload fails — it writes to
 // <name>.part and only renames on success — so retrying is always safe and
 // always starts clean.
-function fail(card, pct, message, file) {
+function fail(card, pct, message, file, retry = true, detail) {
   card.classList.add('err');
   pct.textContent = message;
+  if (detail) {
+    const d = document.createElement('div');
+    d.className = 'q-pct q-detail'; d.style.gridColumn = '1/-1'; d.textContent = detail;
+    card.querySelector('.q-bar').after(d);
+  }
+  if (!retry) return;
   const again = document.createElement('button');
   again.className = 'q-retry';
   again.textContent = 'Retry';
   again.onclick = () => upload(file, card, card.dataset.mode || undefined).then(refresh);
-  card.querySelector('.q-bar').after(again);
+  card.lastElementChild.after(again);
 }
 
 async function exists(name) {

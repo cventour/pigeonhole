@@ -400,6 +400,7 @@ All optional, all environment variables, identical on every platform.
 | `PORT` | `3001` | |
 | `REPO_TITLE` | `Pigeonhole` | Page title and heading |
 | `REPO_SUBTITLE` | `Drop files in. Take files out.` | Line under the heading |
+| `SETTINGS_FILE` | `settings.json` beside `server.js` | Where changes made on the Settings page are kept. Mode 600; not in the managed directory. |
 
 Branding is configuration rather than code, so one copy serves any deployment.
 
@@ -410,6 +411,29 @@ How you set them is the only thing that differs:
 | One run | `REPO_ROOT=/srv/files node server.js` | `$env:REPO_ROOT = "D:\files"` then `node server.js` |
 | This session | `export REPO_ROOT=/srv/files` | `$env:REPO_ROOT = "D:\files"` |
 | Permanently | put the `export` in `~/.zshrc` or `~/.bashrc` | `[Environment]::SetEnvironmentVariable("REPO_ROOT", "D:\files", "User")` |
+
+## Scan uploads with ICAP
+
+**Settings** in the toolbar points Pigeonhole at an ICAP server (MetaDefender
+ICAP Server, c-icap with ClamAV, anything that speaks ICAP `REQMOD`). Each
+upload is sent there once it has arrived, and appears in the listing only if
+the scanner passes it. A blocked file is deleted and the upload card shows the
+threat name.
+
+| Field | Meaning |
+|---|---|
+| Server, Port | Where the ICAP server listens. 1344 is the standard port. |
+| Service | The ICAP service name, the last part of `icap://host:1344/service`. |
+| Timeout | Seconds to wait for the scanner before giving up. |
+| Reject the upload if the scanner cannot be reached or cannot scan | On (the default): such an upload is refused. Off: it is kept, and the page says it was not scanned. |
+
+**Test connection** asks the server what it is and then scans a few harmless
+bytes, so it also catches a server that answers but cannot scan, such as one
+with no licence. It uses the values in the form, so a server can be checked
+before saving.
+
+Only uploads are scanned. Files already in the folder, or put there by other
+means, are not.
 
 ## There is no authentication
 
@@ -429,6 +453,11 @@ use, so `../../etc` lands inside the managed directory rather than outside it.
 Names for rename and mkdir must be a single path component — a separator is
 refused rather than stripped. Filenames render as text, never as markup.
 
+Because anyone who can reach the page can open Settings, they can also make
+the server connect to any host and port, which is a way to probe the network
+it sits on, and can turn scanning off. Another reason to keep it on a network
+you trust.
+
 None of that substitutes for the authentication it does not have.
 
 ## Design notes
@@ -446,7 +475,9 @@ a hang, so XHR stays until browsers fix that.
 
 **Files upload to `<name>.part` and are renamed on completion.** An
 interrupted transfer then leaves nothing behind, rather than a truncated file
-that looks complete until something tries to use it.
+that looks complete until something tries to use it. The ICAP scan runs on
+that `.part` file, before the rename, so a file being scanned is never
+downloadable under its real name.
 
 ## Licence
 

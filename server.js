@@ -13,8 +13,10 @@ import http from 'node:http';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import net from 'node:net';
 import zlib from 'node:zlib';
 import { once } from 'node:events';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 // Resolved, because safe() compares against this string: a relative
@@ -24,6 +26,10 @@ const ROOT = path.resolve(process.env.REPO_ROOT || path.join(process.cwd(), 'fil
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC = path.join(import.meta.dirname, 'public');
+// Settings changed from the page live here, not in ROOT: that is what people
+// browse, zip and hand out, and a scanner address has no business in it.
+const SETTINGS_FILE = path.resolve(process.env.SETTINGS_FILE
+  || path.join(import.meta.dirname, 'settings.json'));
 
 // Branding is configuration, not code: one binary, any deployment.
 const TITLE = process.env.REPO_TITLE || 'Pigeonhole';
@@ -76,6 +82,196 @@ const TYPES = {
   '.txt': 'text/plain; charset=utf-8', '.json': 'application/json',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.pdf': 'application/pdf',
 };
+
+// --- settings --------------------------------------------------------------
+// One small JSON file, read once and rewritten whole. Validated on the way in
+// and again on the way out of disk, so a hand-edited file cannot put the
+// scanner client into a state the page could not have produced.
+const ICAP_DEFAULTS = {
+  enabled: false, host: '', port: 1344, service: 'omsscan',
+  timeout: 120,          // seconds without hearing from the ICAP server
+  failClosed: true,      // refuse the upload when it cannot be scanned
+};
+
+function cleanIcap(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const out = { ...ICAP_DEFAULTS };
+  const bad = (m) => { const e = new Error(m); e.status = 400; throw e; };
+
+  if ('host' in r) {
+    const host = String(r.host ?? '').trim();
+    // A hostname, IPv4 or IPv6 literal. No scheme, port or path: those have
+    // their own fields, and a pasted icap:// URL should say so, not half-work.
+    if (host && !/^[A-Za-z0-9._:-]{1,253}$/.test(host)) bad('Host must be a name or IP address, without icap:// or a port');
+    out.host = host;
+  }
+  if ('port' in r) {
+    const port = Number(r.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) bad('Port must be a number from 1 to 65535');
+    out.port = port;
+  }
+  if ('service' in r) {
+    const service = String(r.service ?? '').trim();
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(service)) bad('Service must be one word of letters, digits, . _ or -');
+    out.service = service;
+  }
+  if ('timeout' in r) {
+    const t = Number(r.timeout);
+    if (!Number.isInteger(t) || t < 5 || t > 3600) bad('Timeout must be 5 to 3600 seconds');
+    out.timeout = t;
+  }
+  if ('failClosed' in r) out.failClosed = r.failClosed === true;
+  if ('enabled' in r) out.enabled = r.enabled === true;
+  if (out.enabled && !out.host) bad('Enter the ICAP server before turning scanning on');
+  return out;
+}
+
+let settings = { icap: { ...ICAP_DEFAULTS } };
+try {
+  settings.icap = cleanIcap(JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')).icap);
+} catch (err) {
+  if (err.code !== 'ENOENT') console.log(`ignoring ${SETTINGS_FILE}: ${err.message}`);
+}
+
+async function saveSettings(next) {
+  // Temp and rename, as with uploads: a crash mid-write must not leave half a
+  // JSON file that silently turns scanning off at the next start.
+  const tmp = SETTINGS_FILE + '.tmp';
+  await fsp.writeFile(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+  await fsp.rename(tmp, SETTINGS_FILE);
+  settings = next;
+}
+
+// --- ICAP ------------------------------------------------------------------
+// A minimal RFC 3507 client: one REQMOD per file, the file sent as the body of
+// a PUT so the scanner sees a name and the bytes. It streams from disk in
+// chunks, so a large file is never held in memory, and it stops reading the
+// reply at the end of the ICAP headers, because a block page follows them and
+// nothing here needs it.
+
+// What the scanner says about its own health rather than about the file.
+// These are not verdicts: whether they stop an upload is the failClosed choice.
+const SCANNER_FAULT = /licen[sc]e|unavailable|not available|not ready|failed to scan|scan fail|timed? ?out|no engine|error/i;
+
+function readIcapHead(text) {
+  const [status, ...lines] = text.split('\r\n');
+  const code = Number(status.split(' ')[1]);
+  const h = {};
+  for (const l of lines) {
+    const i = l.indexOf(':');
+    if (i > 0) h[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim();
+  }
+  return { code, status, h };
+}
+
+function judge({ code, status, h }) {
+  if (code === 204) return { verdict: 'clean' };
+  if (code !== 200 && code !== 201) return { verdict: 'error', detail: status || 'unreadable ICAP reply' };
+
+  // For a request modification, being answered with a *response* means the
+  // scanner refused to pass the request on: the file is blocked.
+  const refused = /^blocked$/i.test(h['x-response-info'] || '') || /res-hdr=/.test(h.encapsulated || '');
+  if (!refused) return { verdict: 'clean' };
+
+  const reason = h['x-response-desc'] || 'blocked by the scanner';
+  const found = h['x-infection-found'] || h['x-violations-found'] || h['x-virus-id'] || '';
+  const threat = (found.match(/Threat=([^;]+)/i) || [])[1]?.trim() || (found && !found.includes('=') ? found : '');
+  if (SCANNER_FAULT.test(reason) && !threat) return { verdict: 'error', detail: reason };
+  return { verdict: 'blocked', reason, threat };
+}
+
+// source: { size, stream() }. Resolves, never rejects: every failure is an
+// 'error' verdict with something a person can act on.
+async function icapScan(source, name, cfg) {
+  const sock = net.connect({ host: cfg.host, port: cfg.port });
+  sock.setTimeout(cfg.timeout * 1000);
+  const ac = new AbortController();
+  let finish;
+  const answer = new Promise((resolve) => { finish = resolve; });
+  const fault = (detail) => finish({ verdict: 'error', detail });
+
+  let head = Buffer.alloc(0);
+  sock.on('data', (c) => {
+    head = Buffer.concat([head, c]);
+    const end = head.indexOf('\r\n\r\n');
+    if (end !== -1) finish(judge(readIcapHead(head.subarray(0, end).toString('latin1'))));
+    else if (head.length > 64 * 1024) fault('unreadable ICAP reply');
+  });
+  sock.on('timeout', () => fault(`no answer from ${cfg.host}:${cfg.port} in ${cfg.timeout}s`));
+  sock.on('error', (e) => fault(e.code === 'ECONNREFUSED' ? `${cfg.host}:${cfg.port} refused the connection`
+    : e.code === 'ENOTFOUND' ? `cannot resolve ${cfg.host}` : e.message));
+  sock.on('close', () => fault('the ICAP server closed the connection'));
+
+  (async () => {
+    try {
+      await once(sock, 'connect', { signal: ac.signal });
+      const put = async (b) => { if (!sock.write(b)) await once(sock, 'drain', { signal: ac.signal }); };
+
+      const http = `PUT /${encodeURIComponent(name)} HTTP/1.1\r\nHost: pigeonhole\r\n` +
+        `Content-Disposition: attachment; filename="${name.replace(/[^\x20-\x7E]|["\\]/g, '_')}"\r\n` +
+        `Content-Type: application/octet-stream\r\nContent-Length: ${source.size}\r\n\r\n`;
+      await put(`REQMOD icap://${cfg.host}:${cfg.port}/${cfg.service} ICAP/1.0\r\n` +
+        `Host: ${cfg.host}\r\nAllow: 204\r\n` +
+        `Encapsulated: req-hdr=0, req-body=${Buffer.byteLength(http)}\r\n\r\n${http}`);
+
+      for await (const c of source.stream()) {
+        if (ac.signal.aborted) return;
+        await put(`${c.length.toString(16)}\r\n`);
+        await put(c);
+        await put('\r\n');
+      }
+      await put('0\r\n\r\n');
+    } catch {
+      // A scanner that decides early (a block, say) may close while the body
+      // is still going out. Its answer, if there is one, is already in hand.
+    }
+  })();
+
+  const result = await answer;
+  ac.abort();
+  sock.destroy();
+  return result;
+}
+
+const scanFile = async (full, name, cfg) =>
+  icapScan({ size: (await fsp.stat(full)).size, stream: () => fs.createReadStream(full) }, name, cfg);
+
+// What "Test connection" does: ask what the server is (OPTIONS), then push a
+// few harmless bytes through a real scan. OPTIONS alone would report a server
+// that answers but cannot scan, which is exactly the state worth catching.
+async function icapTest(cfg) {
+  const t0 = Date.now();
+  const options = await new Promise((resolve) => {
+    const sock = net.connect({ host: cfg.host, port: cfg.port });
+    let buf = '';
+    const end = (r) => { sock.destroy(); resolve(r); };
+    sock.setTimeout(8000, () => end({ error: `no answer from ${cfg.host}:${cfg.port}` }));
+    sock.on('error', (e) => end({ error: e.code === 'ECONNREFUSED' ? `${cfg.host}:${cfg.port} refused the connection`
+      : e.code === 'ENOTFOUND' ? `cannot resolve ${cfg.host}` : e.message }));
+    sock.on('connect', () => sock.write(`OPTIONS icap://${cfg.host}:${cfg.port}/${cfg.service} ICAP/1.0\r\nHost: ${cfg.host}\r\n\r\n`));
+    sock.on('data', (c) => {
+      buf += c.toString('latin1');
+      if (buf.includes('\r\n\r\n')) {
+        const { code, status, h } = readIcapHead(buf.slice(0, buf.indexOf('\r\n\r\n')));
+        end(code === 200 ? { server: h.service || h['server'] || 'ICAP server', methods: h.methods || '' }
+                         : { error: status });
+      }
+    });
+    sock.on('close', () => end({ error: 'the ICAP server closed the connection' }));
+  });
+  if (options.error) return { ok: false, error: options.error };
+
+  const sample = Buffer.from('pigeonhole connection test\n');
+  const scan = await icapScan({ size: sample.length, stream: () => Readable.from([sample]) },
+                              'pigeonhole-test.txt', { ...cfg, timeout: 20 });
+  const ms = Date.now() - t0;
+  if (scan.verdict === 'clean') return { ok: true, server: options.server, methods: options.methods, ms };
+  return {
+    ok: false, server: options.server, ms,
+    error: scan.verdict === 'error' ? `${options.server} answers but cannot scan: ${scan.detail}`
+      : `${options.server} blocked the test file: ${scan.reason}`,
+  };
+}
 
 // --- handlers --------------------------------------------------------------
 async function list(dir) {
@@ -138,13 +334,32 @@ async function upload(req, res, rel, mode) {
 
   // Write to a temporary name and rename on success. An interrupted upload
   // then leaves nothing behind, instead of a truncated installer that looks
-  // complete until someone runs it.
+  // complete until someone runs it. Scanning slots in before the rename for
+  // the same reason: a file under scrutiny is never visible under its name.
   const tmp = full + '.part';
   try {
     await pipeline(req, fs.createWriteStream(tmp));
+
+    const cfg = settings.icap;
+    let scan = 'off', note;
+    if (cfg.enabled) {
+      const r = await scanFile(tmp, name, cfg);
+      if (r.verdict === 'blocked') {
+        await fsp.rm(tmp, { force: true });
+        return json(res, 422, { error: 'blocked', reason: r.reason, threat: r.threat, name });
+      }
+      if (r.verdict === 'error') {
+        if (cfg.failClosed) {
+          await fsp.rm(tmp, { force: true });
+          return json(res, 502, { error: 'scan failed', detail: r.detail, name });
+        }
+        scan = 'skipped'; note = r.detail;
+      } else scan = 'clean';
+    }
+
     await fsp.rename(tmp, full);
     const st = await fsp.stat(full);
-    json(res, 200, { ok: true, name, size: st.size });
+    json(res, 200, { ok: true, name, size: st.size, scan, note });
   } catch (err) {
     await fsp.rm(tmp, { force: true });
     json(res, 500, { error: String(err.message || err) });
@@ -387,6 +602,26 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { title: TITLE, subtitle: SUBTITLE, root: path.basename(ROOT) });
     }
 
+    if (req.method === 'GET' && p === '/api/settings') {
+      return json(res, 200, settings);
+    }
+
+    if (req.method === 'PUT' && p === '/api/settings') {
+      const body = await readJson(req);
+      const next = { ...settings, icap: cleanIcap({ ...settings.icap, ...body.icap }) };
+      await saveSettings(next);
+      return json(res, 200, settings);
+    }
+
+    // Tries the values on the page, not the saved ones, so a server can be
+    // checked before it is committed to.
+    if (req.method === 'POST' && p === '/api/settings/icap-test') {
+      const body = await readJson(req);
+      const cfg = cleanIcap({ ...body, enabled: false });
+      if (!cfg.host) return json(res, 400, { error: 'Enter the ICAP server first' });
+      return json(res, 200, await icapTest(cfg));
+    }
+
     if (req.method === 'GET' && p === '/api/exists') {
       const full = safe(url.searchParams.get('path') || '');
       if (!full || full === ROOT) return json(res, 400, { error: 'bad path' });
@@ -453,7 +688,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET') return await serveStatic(res, p);
     json(res, 405, { error: 'method not allowed' });
   } catch (err) {
-    json(res, 500, { error: String(err.message || err) });
+    json(res, err.status || (err instanceof SyntaxError ? 400 : 500),
+         { error: String(err.message || err) });
   }
 });
 
