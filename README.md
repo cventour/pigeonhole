@@ -141,6 +141,9 @@ User=pigeonhole
 WorkingDirectory=/opt/pigeonhole
 ExecStart=/usr/bin/node /opt/pigeonhole/server.js
 Environment=REPO_ROOT=/srv/files
+# A place the service may write its settings, which ProtectSystem=strict
+# would otherwise refuse. Pigeonhole finds it by itself: /var/lib/pigeonhole.
+StateDirectory=pigeonhole
 # Quote any value containing a space: systemd splits unquoted ones.
 Environment="REPO_TITLE=Team Drop"
 Restart=on-failure
@@ -400,7 +403,7 @@ All optional, all environment variables, identical on every platform.
 | `PORT` | `3001` | |
 | `REPO_TITLE` | `Pigeonhole` | Page title and heading |
 | `REPO_SUBTITLE` | `Drop files in. Take files out.` | Line under the heading |
-| `SETTINGS_FILE` | `settings.json` beside `server.js` | Where changes made on the Settings page are kept. Mode 600; not in the managed directory. |
+| `SETTINGS_FILE` | `$STATE_DIRECTORY/settings.json` under systemd, else `settings.json` beside `server.js` | Where changes made on the Settings page are kept. Mode 600; not in the managed directory. It must be somewhere the service can write. |
 
 Branding is configuration rather than code, so one copy serves any deployment.
 

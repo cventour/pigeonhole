@@ -28,8 +28,10 @@ const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC = path.join(import.meta.dirname, 'public');
 // Settings changed from the page live here, not in ROOT: that is what people
 // browse, zip and hand out, and a scanner address has no business in it.
+// Under systemd, StateDirectory= names a place the service may write even with
+// ProtectSystem=strict, and the code directory is not one of them.
 const SETTINGS_FILE = path.resolve(process.env.SETTINGS_FILE
-  || path.join(import.meta.dirname, 'settings.json'));
+  || path.join(process.env.STATE_DIRECTORY?.split(':')[0] || import.meta.dirname, 'settings.json'));
 
 // Branding is configuration, not code: one binary, any deployment.
 const TITLE = process.env.REPO_TITLE || 'Pigeonhole';
@@ -137,8 +139,17 @@ async function saveSettings(next) {
   // Temp and rename, as with uploads: a crash mid-write must not leave half a
   // JSON file that silently turns scanning off at the next start.
   const tmp = SETTINGS_FILE + '.tmp';
-  await fsp.writeFile(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
-  await fsp.rename(tmp, SETTINGS_FILE);
+  try {
+    await fsp.writeFile(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+    await fsp.rename(tmp, SETTINGS_FILE);
+  } catch (err) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    if (['EROFS', 'EACCES', 'EPERM', 'ENOENT'].includes(err.code)) {
+      throw new Error(`Could not save settings to ${SETTINGS_FILE} (${err.code}). ` +
+        'Point SETTINGS_FILE at a folder this service can write to.');
+    }
+    throw err;
+  }
   settings = next;
 }
 
